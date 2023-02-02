@@ -1,0 +1,65 @@
+#!/bin/bash 
+
+base_dir=$1
+template_dir=$2
+subject=$3
+t1=$4
+
+# mkdir ${base_dir}/eacsf_jakob
+mkdir ${base_dir}/eacsf_jakob/${subject}
+cd ${base_dir}/eacsf_jakob/${subject}
+
+# run synthseg
+
+mri_synthseg --i ${t1} --o T1_synthseg.nii.gz --parc --robust --vol T1_synthseg_volumes.csv --qc T1_qc.csv --post T1_pp.nii.gz --resample T1_resample.nii.gz --threads 4
+
+
+# extract ea-csf from synthseg segmentation
+
+fslmaths T1_synthseg.nii.gz -thr 24 -uthr 24 -bin eacsf
+
+
+# extract brain with synthseg mask
+
+fslmaths T1_resample.nii.gz -mas T1_synthseg.nii.gz T1_brain_ss
+
+
+# create transformation between mni and native scan
+
+flirt -in ${FSLDIR}/data/standard/MNI152_T1_2mm_brain -ref T1_brain_ss.nii.gz -omat mni2bet.mat
+
+
+# remove csf in ventricles and cisterns (need ventricle mask for this)
+
+flirt -in ${template_dir}/MNI152_T1_2mm_VentricleMask_sc_full -ref T1_brain_ss.nii.gz -init mni2bet.mat -applyxfm -o ventricle_mask_native
+fslmaths ventricle_mask_native -thr 0.5 -bin ventricle_mask_native
+fslmaths ventricle_mask_native -binv ventricle_invmask_native
+
+fslmaths eacsf -mas ventricle_invmask_native eacsf
+
+
+# get ventral eacsf mask (need AC_mask_plane for this)
+
+flirt -in ${template_dir}/AC_mask_plane -ref T1_brain_ss.nii.gz -init mni2bet.mat -applyxfm -o AC_mask_native
+AC_mask_native -thr 0.5 -bin AC_mask_native
+fslmaths eacsf -mas AC_mask_native eacsf_north
+
+# get anterior eacsf mask (need precentral_plane for this)
+
+flirt -in ${template_dir}/precentral_plane -ref T1_brain_ss.nii.gz -init mni2bet.mat -applyxfm -o precentral_mask_native
+precentral_mask_native -thr 0.5 -bin precentral_mask_native
+fslmaths eacsf_north -mas precentral_mask_native eacsf_north
+
+
+# get skull and then dilate eacsf to boundary
+
+bet T1_resample.nii.gz T1_resample_bet -A
+fslmaths T1_resample_bet_outskull_mesh.nii.gz -mas AC_mask_native bet_outskull_mesh_north
+3dmask_tool -input eacsf_north.nii.gz eacsf_north_outskull.nii.gz -prefix eacsf_north_outskull_fill.nii.gz -dilate_input 2 -2 -frac 0.7 -fill_holes
+
+
+# get thickness
+
+bash ../../bess_pipeline-main/run_bb_thick.sh
+
+
